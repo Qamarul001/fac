@@ -102,18 +102,15 @@ with tab_reg:
 
     if img_file:
         file_bytes = np.asarray(bytearray(img_file.read()), dtype=np.uint8)
-        image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+        image = cv2.imdecode(file_bytes, 1)
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         reg_landmarks = extract_landmarks(image_rgb)
 
         if reg_landmarks is not None:
-            try:
-                reshaped = reg_landmarks.reshape(-1, 2)
-                st.image(draw_face_boxes(image_rgb, [reshaped]), caption="Detected face", use_container_width=True)
-            except Exception as e:
-                st.error(f"❌ Failed to process face landmarks: {e}")
+            reshaped = reg_landmarks.reshape(-1, 2)
+            st.image(draw_face_boxes(image_rgb, [reshaped]), caption="Detected face")
         else:
-            st.warning("⚠️ No face detected. Try again.")
+            st.warning("No face detected.")
 
     if st.button("Register", disabled=not(reg_landmarks is not None and name.strip() and sid.strip())):
         match_idx = compare_landmarks(encs_known, reg_landmarks)
@@ -133,7 +130,7 @@ with tab_reg:
         names_known, encs_known, full_data = fetch_registered()
 
     with st.expander("📄 View registered students"):
-        st.dataframe(full_data, use_container_width=True)
+        st.dataframe(full_data)
 
 with tab_log:
     st.subheader("Student Login / Check-in")
@@ -142,18 +139,15 @@ with tab_log:
 
     if img_file:
         file_bytes = np.asarray(bytearray(img_file.read()), dtype=np.uint8)
-        image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+        image = cv2.imdecode(file_bytes, 1)
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         login_landmarks = extract_landmarks(image_rgb)
 
         if login_landmarks is not None:
-            try:
-                reshaped = login_landmarks.reshape(-1, 2)
-                st.image(draw_face_boxes(image_rgb, [reshaped]), caption="Detected face", use_container_width=True)
-            except Exception as e:
-                st.error(f"❌ Failed to process face landmarks: {e}")
+            reshaped = login_landmarks.reshape(-1, 2)
+            st.image(draw_face_boxes(image_rgb, [reshaped]), caption="Detected face")
         else:
-            st.warning("⚠️ No face detected. Try again.")
+            st.warning("No face detected.")
 
     if st.button("Login", disabled=(login_landmarks is None)):
         if not encs_known:
@@ -165,7 +159,7 @@ with tab_log:
             st.success(f"✅ Welcome back, {names_known[match_idx]}! You are checked in.")
             st.session_state["logged_in"] = names_known[match_idx]
         else:
-            st.error("❌ Face not recognised. Please register first.")
+            st.error("Face not recognised. Please register first.")
 
     if "logged_in" in st.session_state:
         st.markdown(f"### Logged in as: {st.session_state['logged_in']}")
