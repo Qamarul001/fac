@@ -1,0 +1,6 @@
+streamlit
+face_recognition
+dlib
+opencv-python
+numpy
+requests
