@@ -1,5 +1,5 @@
 streamlit==1.35.0
-mediapipe
-numpy==1.26.4
-opencv-python==4.9.0.80
-requests==2.31.0
+opencv-python
+mediapipe==0.9.1.0
+numpy
+requests
