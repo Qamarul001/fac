@@ -38,7 +38,7 @@ with st.sidebar.expander("Notes / Click here 📚", expanded=False):
     - Use good lighting for better recognition.
     """)
 
-GAS_ENDPOINT = "https://script.google.com/macros/s/AKfycbzAeBshNQhifFL02llpSM9kMPz21Zt71H86EfQH1mxtFfYn8_eEMv2o5vNbrFLzVGmLWw/exec"
+GAS_ENDPOINT = "https://script.google.com/macros/s/AKfycbz85q3-5fifClgDUqGQ6hrN3cDa3AgywAwzUSf7Q7VMWz-GI56RWV0IchCpyE7Q-jJjuQ/exec"
 
 mp_face = mp.solutions.face_mesh
 
@@ -48,19 +48,10 @@ def fetch_registered():
         resp = requests.get(GAS_ENDPOINT, timeout=10)
         resp.raise_for_status()
         data = resp.json()
-        names = []
-        encs = []
-
-        for d in data:
-            try:
-                enc_str = d["encoding"].strip().replace("\n", "").replace(" ", "")
-                enc = np.fromstring(enc_str, sep=",").astype(np.float32)
-                if enc.shape == (936,):
-                    names.append(d["name"])
-                    encs.append(enc)
-            except Exception:
-                continue
-
+        names = [d["name"] for d in data]
+        encs = [np.fromstring(d["encoding"], sep=",") for d in data]
+        # Normalize encodings after loading
+        encs = [normalize_landmarks(enc) for enc in encs]
         return names, encs, data
     except Exception as e:
         st.error(f"Failed to fetch registered users: {e}")
@@ -88,24 +79,34 @@ def extract_landmarks(image):
         h, w, _ = image.shape
         landmarks = results.multi_face_landmarks[0].landmark
         coords = [(lm.x * w, lm.y * h) for lm in landmarks]
-        return np.array(coords, dtype=np.float32).flatten()  # (936,)
+        return np.array(coords).flatten()  # 468 x 2 = 936 values
+
+def normalize_landmarks(landmarks):
+    coords = landmarks.reshape(-1, 2)
+    center = coords[1]  # Nose tip approx
+    coords = coords - center  # Center to nose
+    eye_dist = np.linalg.norm(coords[33] - coords[263])  # Distance between eyes approx
+    if eye_dist == 0:
+        return landmarks  # Avoid division by zero
+    coords = coords / eye_dist  # Scale normalization
+    return coords.flatten()
 
 def compare_landmarks(known_encs, test_enc, threshold=0.15):
-    test_enc = test_enc.astype(np.float32)
+    distances = []
     for idx, enc in enumerate(known_encs):
-        if enc.shape != test_enc.shape:
-            continue
         dist = np.linalg.norm(enc - test_enc)
-        st.write(f"Distance to {idx}: {dist:.4f}")  # Debug: show distances
-        if dist < threshold:
-            return idx
+        distances.append((idx, dist))
+    # Debug print all distances
+    for idx, dist in distances:
+        st.write(f"Distance to {idx}: {dist:.4f}")
+    distances = sorted(distances, key=lambda x: x[1])
+    if distances and distances[0][1] < threshold:
+        return distances[0][0]
     return None
 
 st.title("🎓 Student Face System — Camera Input with MediaPipe")
 
 names_known, encs_known, full_data = fetch_registered()
-st.session_state["names_known"] = names_known
-st.session_state["encs_known"] = encs_known
 
 tab_reg, tab_log = st.tabs(["📝 Register", "✅ Login"])
 
@@ -121,10 +122,12 @@ with tab_reg:
         file_bytes = np.asarray(bytearray(img_file.read()), dtype=np.uint8)
         image = cv2.imdecode(file_bytes, 1)
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        reg_landmarks = extract_landmarks(image_rgb)
+        reg_landmarks_raw = extract_landmarks(image_rgb)
 
-        if reg_landmarks is not None:
-            st.image(draw_face_boxes(image_rgb, [reg_landmarks.reshape(-1, 2)]), caption="Detected face")
+        if reg_landmarks_raw is not None:
+            reg_landmarks = normalize_landmarks(reg_landmarks_raw)
+            st.image(draw_face_boxes(image_rgb, [reg_landmarks_raw.reshape(-1, 2)]), caption="Detected face", use_column_width=True)
+            st.write("Normalized encoding sample:", reg_landmarks[:10])
         else:
             st.warning("No face detected.")
 
@@ -144,8 +147,6 @@ with tab_reg:
         st.success("✅ Registered & stored!")
         fetch_registered.clear()
         names_known, encs_known, full_data = fetch_registered()
-        st.session_state["names_known"] = names_known
-        st.session_state["encs_known"] = encs_known
 
     with st.expander("📄 View registered students"):
         st.dataframe(full_data, use_container_width=True)
@@ -159,22 +160,24 @@ with tab_log:
         file_bytes = np.asarray(bytearray(img_file.read()), dtype=np.uint8)
         image = cv2.imdecode(file_bytes, 1)
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        login_landmarks = extract_landmarks(image_rgb)
+        login_landmarks_raw = extract_landmarks(image_rgb)
 
-        if login_landmarks is not None:
-            st.image(draw_face_boxes(image_rgb, [login_landmarks.reshape(-1, 2)]), caption="Detected face")
+        if login_landmarks_raw is not None:
+            login_landmarks = normalize_landmarks(login_landmarks_raw)
+            st.image(draw_face_boxes(image_rgb, [login_landmarks_raw.reshape(-1, 2)]), caption="Detected face", use_column_width=True)
+            st.write("Normalized encoding sample:", login_landmarks[:10])
         else:
             st.warning("No face detected.")
 
     if st.button("Login", disabled=(login_landmarks is None)):
-        if not st.session_state["encs_known"]:
+        if not encs_known:
             st.error("No students registered yet.")
             st.stop()
 
-        match_idx = compare_landmarks(st.session_state["encs_known"], login_landmarks)
+        match_idx = compare_landmarks(encs_known, login_landmarks)
         if match_idx is not None:
-            st.success(f"✅ Welcome back, {st.session_state['names_known'][match_idx]}! You are checked in.")
-            st.session_state["logged_in"] = st.session_state["names_known"][match_idx]
+            st.success(f"✅ Welcome back, {names_known[match_idx]}! You are checked in.")
+            st.session_state["logged_in"] = names_known[match_idx]
         else:
             st.error("Face not recognised. Please register first.")
 
