@@ -1,49 +1,23 @@
 import streamlit as st
-import face_recognition
 import numpy as np
 import requests
 import datetime
 import json
+import cv2
+import mediapipe as mp
 
-# --- Page config must be the very first Streamlit command ---
 st.set_page_config(page_title="Student Face System", page_icon="🎓", layout="wide")
 
-# Sidebar with Installation Guide and User Manual
 with st.sidebar.expander("Notes / Click here 📚", expanded=False):
     st.markdown("## Installation Guide")
     st.markdown("""
-    Before running this app, please install the following dependencies:
+    Install dependencies:
 
     ```bash
-    pip install streamlit face_recognition numpy requests opencv-python
+    pip install streamlit numpy opencv-python mediapipe requests
     ```
 
-    Additionally, **face_recognition** requires:
-    - `cmake`
-    - `dlib` (may require system libraries)
-
-    On Ubuntu/Debian, you may need to install:
-    ```bash
-    sudo apt-get update
-    sudo apt-get install build-essential cmake libgtk-3-dev libboost-python-dev
-    ```
-
-    For Windows users who cannot install `dlib` or `face_recognition` directly via pip, 
-    you can download the pre-built wheel (.whl) files from trusted sources like:
-
-    - https://github.com/RLovelett/dlib-wheels
-    - https://www.lfd.uci.edu/~gohlke/pythonlibs/#dlib
-
-    Download the matching `.whl` files for your Python version and system architecture,
-    place them in your project folder, then install locally with:
-
-    ```bash
-    pip install dlib-19.24.0-cp310-cp310-win_amd64.whl
-    pip install face_recognition-1.3.0-py310-win_amd64.whl
-    ```
-
-    Replace filenames with the versions you downloaded.
-
+    No need for dlib or face_recognition anymore!
     """)
 
     st.markdown("## User Manual")
@@ -65,34 +39,22 @@ with st.sidebar.expander("Notes / Click here 📚", expanded=False):
     - Use good lighting for better recognition.
     """)
 
-GAS_ENDPOINT = (
-    "https://script.google.com/macros/s/AKfycbz85q3-5fifClgDUqGQ6hrN3cDa3AgywAwzUSf7Q7VMWz-GI56RWV0IchCpyE7Q-jJjuQ/exec"
-)  # Replace with your GAS endpoint
+GAS_ENDPOINT = "https://script.google.com/macros/s/AKfycbz85q3-5fifClgDUqGQ6hrN3cDa3AgywAwzUSf7Q7VMWz-GI56RWV0IchCpyE7Q-jJjuQ/exec"
 
-def safe_get_json(url, timeout=10):
-    try:
-        resp = requests.get(url, timeout=timeout)
-        resp.raise_for_status()
-    except requests.RequestException as e:
-        st.error(f"Cannot reach GAS: {e}")
-        st.stop()
-
-    if "application/json" not in resp.headers.get("content-type", ""):
-        st.error(f"GAS did not return JSON.\nFirst 300 chars:\n{resp.text[:300]}")
-        st.stop()
-
-    try:
-        return resp.json()
-    except json.JSONDecodeError as e:
-        st.error(f"Invalid JSON: {e}\n{resp.text[:300]}")
-        st.stop()
+mp_face = mp.solutions.face_mesh
 
 @st.cache_data(show_spinner=False)
 def fetch_registered():
-    data = safe_get_json(GAS_ENDPOINT)
-    names = [d["name"] for d in data]
-    encs = [np.fromstring(d["encoding"], sep=",") for d in data]
-    return names, encs, data
+    try:
+        resp = requests.get(GAS_ENDPOINT, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        names = [d["name"] for d in data]
+        encs = [np.fromstring(d["encoding"], sep=",") for d in data]
+        return names, encs, data
+    except Exception as e:
+        st.error(f"Failed to fetch registered users: {e}")
+        st.stop()
 
 def post_student(row):
     try:
@@ -101,14 +63,31 @@ def post_student(row):
         st.error(f"Upload failed: {e}")
         st.stop()
 
-def draw_face_boxes(image, face_locations):
-    import cv2
+def draw_face_boxes(image, landmarks):
     img_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-    for (top, right, bottom, left) in face_locations:
-        cv2.rectangle(img_bgr, (left, top), (right, bottom), (0, 255, 0), 2)
+    for lm in landmarks:
+        for x, y in lm:
+            cv2.circle(img_bgr, (int(x), int(y)), 1, (0, 255, 0), -1)
     return cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
 
-st.title("🎓 Student Face System — Camera Input with Face Detection")
+def extract_landmarks(image):
+    with mp_face.FaceMesh(static_image_mode=True, max_num_faces=1, refine_landmarks=True) as face_mesh:
+        results = face_mesh.process(image)
+        if not results.multi_face_landmarks:
+            return None
+        h, w, _ = image.shape
+        landmarks = results.multi_face_landmarks[0].landmark
+        coords = [(lm.x * w, lm.y * h) for lm in landmarks]
+        return np.array(coords).flatten()  # 468 x 2 = 936 values
+
+def compare_landmarks(known_encs, test_enc, threshold=0.08):
+    for idx, enc in enumerate(known_encs):
+        dist = np.linalg.norm(enc - test_enc)
+        if dist < threshold:
+            return idx
+    return None
+
+st.title("🎓 Student Face System — Camera Input with MediaPipe")
 
 names_known, encs_known, full_data = fetch_registered()
 
@@ -118,44 +97,35 @@ with tab_reg:
     st.subheader("Register New Student")
     name = st.text_input("Full Name")
     sid = st.text_input("Student ID")
-
     img_file = st.camera_input("Take a photo for registration")
-    reg_img = None
 
-    if img_file is not None:
-        reg_img = face_recognition.load_image_file(img_file)
-        faces = face_recognition.face_locations(reg_img)
-        if faces:
-            img_with_boxes = draw_face_boxes(reg_img, faces)
-            st.image(img_with_boxes, caption=f"Detected {len(faces)} face(s)", use_container_width=True)
+    reg_landmarks = None
+
+    if img_file:
+        file_bytes = np.asarray(bytearray(img_file.read()), dtype=np.uint8)
+        image = cv2.imdecode(file_bytes, 1)
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        reg_landmarks = extract_landmarks(image_rgb)
+
+        if reg_landmarks is not None:
+            st.image(draw_face_boxes(image_rgb, [reg_landmarks.reshape(-1, 2)]), caption="Detected face", use_container_width=True)
         else:
-            st.warning("No faces detected in the photo.")
+            st.warning("No face detected.")
 
-    can_register = reg_img is not None and name.strip() != "" and sid.strip() != ""
-
-    if st.button("Register", disabled=not can_register):
-        faces = face_recognition.face_locations(reg_img)
-        if len(faces) != 1:
-            st.error("Exactly ONE face must be visible for registration.")
+    if st.button("Register", disabled=not(reg_landmarks is not None and name.strip() and sid.strip())):
+        match_idx = compare_landmarks(encs_known, reg_landmarks)
+        if match_idx is not None:
+            st.error(f"Duplicate! Already registered as {names_known[match_idx]}.")
             st.stop()
-
-        enc = face_recognition.face_encodings(reg_img, faces)[0]
-
-        if encs_known:
-            matches = face_recognition.compare_faces(encs_known, enc, tolerance=0.45)
-            if True in matches:
-                st.error(f"Duplicate! Already registered as {names_known[matches.index(True)]}.")
-                st.stop()
 
         row = {
             "timestamp": datetime.datetime.now().isoformat(),
             "student_id": sid.strip(),
             "name": name.strip(),
-            "encoding": ",".join(map(str, enc.tolist())),
+            "encoding": ",".join(map(str, reg_landmarks.tolist())),
         }
         post_student(row)
         st.success("✅ Registered & stored!")
-
         fetch_registered.clear()
         names_known, encs_known, full_data = fetch_registered()
 
@@ -164,39 +134,29 @@ with tab_reg:
 
 with tab_log:
     st.subheader("Student Login / Check-in")
-
     img_file = st.camera_input("Take a photo for login")
-    login_img = None
+    login_landmarks = None
 
-    if img_file is not None:
-        login_img = face_recognition.load_image_file(img_file)
-        faces = face_recognition.face_locations(login_img)
-        if faces:
-            img_with_boxes = draw_face_boxes(login_img, faces)
-            st.image(img_with_boxes, caption=f"Detected {len(faces)} face(s)", use_container_width=True)
+    if img_file:
+        file_bytes = np.asarray(bytearray(img_file.read()), dtype=np.uint8)
+        image = cv2.imdecode(file_bytes, 1)
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        login_landmarks = extract_landmarks(image_rgb)
+
+        if login_landmarks is not None:
+            st.image(draw_face_boxes(image_rgb, [login_landmarks.reshape(-1, 2)]), caption="Detected face", use_container_width=True)
         else:
-            st.warning("No faces detected in the photo.")
+            st.warning("No face detected.")
 
-    if st.button("Login", disabled=(login_img is None)):
-        if login_img is None:
-            st.warning("Please take a photo first.")
-            st.stop()
-
-        faces = face_recognition.face_locations(login_img)
-        if len(faces) != 1:
-            st.error("Exactly ONE face must be visible for login.")
-            st.stop()
-
-        enc = face_recognition.face_encodings(login_img, faces)[0]
-
+    if st.button("Login", disabled=(login_landmarks is None)):
         if not encs_known:
             st.error("No students registered yet.")
             st.stop()
 
-        matches = face_recognition.compare_faces(encs_known, enc, tolerance=0.45)
-        if True in matches:
-            st.success(f"✅ Welcome back, {names_known[matches.index(True)]}! You are checked in.")
-            st.session_state["logged_in"] = names_known[matches.index(True)]
+        match_idx = compare_landmarks(encs_known, login_landmarks)
+        if match_idx is not None:
+            st.success(f"✅ Welcome back, {names_known[match_idx]}! You are checked in.")
+            st.session_state["logged_in"] = names_known[match_idx]
         else:
             st.error("Face not recognised. Please register first.")
 
