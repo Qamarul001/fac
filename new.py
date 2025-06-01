@@ -2,6 +2,7 @@ import streamlit as st
 import numpy as np
 import requests
 import datetime
+import json
 import cv2
 import mediapipe as mp
 
@@ -48,11 +49,19 @@ def fetch_registered():
         resp = requests.get(GAS_ENDPOINT, timeout=10)
         resp.raise_for_status()
         data = resp.json()
-        names = [d["name"] for d in data]
-        encs = [np.fromstring(d["encoding"], sep=",") for d in data]
-        # Normalize encodings after loading
-        encs = [normalize_landmarks(enc) for enc in encs]
-        return names, encs, data
+
+        names, encs, valid_data = [], [], []
+        for d in data:
+            encoding_array = np.fromstring(d["encoding"], sep=",")
+            if encoding_array.shape[0] == 936:
+                names.append(d["name"])
+                encs.append(encoding_array)
+                valid_data.append(d)
+            else:
+                st.warning(f"⚠️ Skipped corrupted encoding for: {d.get('name', 'Unknown')}")
+
+        return names, encs, valid_data
+
     except Exception as e:
         st.error(f"Failed to fetch registered users: {e}")
         st.stop()
@@ -81,27 +90,13 @@ def extract_landmarks(image):
         coords = [(lm.x * w, lm.y * h) for lm in landmarks]
         return np.array(coords).flatten()  # 468 x 2 = 936 values
 
-def normalize_landmarks(landmarks):
-    coords = landmarks.reshape(-1, 2)
-    center = coords[1]  # Nose tip approx
-    coords = coords - center  # Center to nose
-    eye_dist = np.linalg.norm(coords[33] - coords[263])  # Distance between eyes approx
-    if eye_dist == 0:
-        return landmarks  # Avoid division by zero
-    coords = coords / eye_dist  # Scale normalization
-    return coords.flatten()
-
-def compare_landmarks(known_encs, test_enc, threshold=0.15):
-    distances = []
+def compare_landmarks(known_encs, test_enc, threshold=0.08):
     for idx, enc in enumerate(known_encs):
+        if enc.shape != test_enc.shape:
+            continue  # skip incompatible
         dist = np.linalg.norm(enc - test_enc)
-        distances.append((idx, dist))
-    # Debug print all distances
-    for idx, dist in distances:
-        st.write(f"Distance to {idx}: {dist:.4f}")
-    distances = sorted(distances, key=lambda x: x[1])
-    if distances and distances[0][1] < threshold:
-        return distances[0][0]
+        if dist < threshold:
+            return idx
     return None
 
 st.title("🎓 Student Face System — Camera Input with MediaPipe")
@@ -122,12 +117,10 @@ with tab_reg:
         file_bytes = np.asarray(bytearray(img_file.read()), dtype=np.uint8)
         image = cv2.imdecode(file_bytes, 1)
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        reg_landmarks_raw = extract_landmarks(image_rgb)
+        reg_landmarks = extract_landmarks(image_rgb)
 
-        if reg_landmarks_raw is not None:
-            reg_landmarks = normalize_landmarks(reg_landmarks_raw)
-            st.image(draw_face_boxes(image_rgb, [reg_landmarks_raw.reshape(-1, 2)]), caption="Detected face", use_column_width=True)
-            st.write("Normalized encoding sample:", reg_landmarks[:10])
+        if reg_landmarks is not None:
+            st.image(draw_face_boxes(image_rgb, [reg_landmarks.reshape(-1, 2)]), caption="Detected face")
         else:
             st.warning("No face detected.")
 
@@ -149,7 +142,7 @@ with tab_reg:
         names_known, encs_known, full_data = fetch_registered()
 
     with st.expander("📄 View registered students"):
-        st.dataframe(full_data, use_container_width=True)
+        st.dataframe(full_data)
 
 with tab_log:
     st.subheader("Student Login / Check-in")
@@ -160,12 +153,10 @@ with tab_log:
         file_bytes = np.asarray(bytearray(img_file.read()), dtype=np.uint8)
         image = cv2.imdecode(file_bytes, 1)
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        login_landmarks_raw = extract_landmarks(image_rgb)
+        login_landmarks = extract_landmarks(image_rgb)
 
-        if login_landmarks_raw is not None:
-            login_landmarks = normalize_landmarks(login_landmarks_raw)
-            st.image(draw_face_boxes(image_rgb, [login_landmarks_raw.reshape(-1, 2)]), caption="Detected face", use_column_width=True)
-            st.write("Normalized encoding sample:", login_landmarks[:10])
+        if login_landmarks is not None:
+            st.image(draw_face_boxes(image_rgb, [login_landmarks.reshape(-1, 2)]), caption="Detected face")
         else:
             st.warning("No face detected.")
 
