@@ -2,24 +2,20 @@ import streamlit as st
 import numpy as np
 import requests
 import datetime
-import json
 import cv2
 import mediapipe as mp
 
 st.set_page_config(page_title="Student Face System", page_icon="🎓", layout="wide")
 
+# Sidebar notes
 with st.sidebar.expander("Notes / Click here 📚", expanded=False):
     st.markdown("## Installation Guide")
     st.markdown("""
-    Install dependencies:
-
     ```bash
     pip install streamlit numpy opencv-python mediapipe requests
     ```
-
     No need for dlib or face_recognition anymore!
     """)
-
     st.markdown("## User Manual")
     st.markdown("""
     ### Register Tab
@@ -32,17 +28,20 @@ with st.sidebar.expander("Notes / Click here 📚", expanded=False):
     1. Take a photo for login.
     2. Click **Login** to check in.
     3. If your face matches, you will be logged in.
-    4. Use **Log out** button to end session.
+    4. Use **Log out** to end session.
 
     **Notes:**
-    - Only one face should be visible during registration and login.
+    - Only one face should be visible.
     - Use good lighting for better recognition.
     """)
 
+# Google Apps Script endpoint
 GAS_ENDPOINT = "https://script.google.com/macros/s/AKfycbz85q3-5fifClgDUqGQ6hrN3cDa3AgywAwzUSf7Q7VMWz-GI56RWV0IchCpyE7Q-jJjuQ/exec"
 
+# Initialize MediaPipe
 mp_face = mp.solutions.face_mesh
 
+# Fetch registered users
 @st.cache_data(show_spinner=False)
 def fetch_registered():
     try:
@@ -56,6 +55,7 @@ def fetch_registered():
         st.error(f"Failed to fetch registered users: {e}")
         st.stop()
 
+# Upload to Google Sheets
 def post_student(row):
     try:
         requests.post(GAS_ENDPOINT, json=row, timeout=10).raise_for_status()
@@ -63,6 +63,7 @@ def post_student(row):
         st.error(f"Upload failed: {e}")
         st.stop()
 
+# Draw face points
 def draw_face_boxes(image, landmarks):
     img_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
     for lm in landmarks:
@@ -70,6 +71,7 @@ def draw_face_boxes(image, landmarks):
             cv2.circle(img_bgr, (int(x), int(y)), 1, (0, 255, 0), -1)
     return cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
 
+# Extract 468 face landmarks × 2D coordinates
 def extract_landmarks(image):
     with mp_face.FaceMesh(static_image_mode=True, max_num_faces=1, refine_landmarks=True) as face_mesh:
         results = face_mesh.process(image)
@@ -78,8 +80,9 @@ def extract_landmarks(image):
         h, w, _ = image.shape
         landmarks = results.multi_face_landmarks[0].landmark
         coords = [(lm.x * w, lm.y * h) for lm in landmarks]
-        return np.array(coords).flatten()  # 468 x 2 = 936 values
+        return np.array(coords).flatten()  # 936 values
 
+# Compare facial encodings
 def compare_landmarks(known_encs, test_enc, threshold=0.08):
     for idx, enc in enumerate(known_encs):
         dist = np.linalg.norm(enc - test_enc)
@@ -87,18 +90,20 @@ def compare_landmarks(known_encs, test_enc, threshold=0.08):
             return idx
     return None
 
+# App layout
 st.title("🎓 Student Face System — Camera Input with MediaPipe")
 
+# Load known users
 names_known, encs_known, full_data = fetch_registered()
 
 tab_reg, tab_log = st.tabs(["📝 Register", "✅ Login"])
 
+# Registration tab
 with tab_reg:
     st.subheader("Register New Student")
     name = st.text_input("Full Name")
     sid = st.text_input("Student ID")
     img_file = st.camera_input("Take a photo for registration")
-
     reg_landmarks = None
 
     if img_file:
@@ -107,12 +112,12 @@ with tab_reg:
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         reg_landmarks = extract_landmarks(image_rgb)
 
-        if reg_landmarks is not None:
+        if isinstance(reg_landmarks, np.ndarray) and reg_landmarks.size == 936:
             st.image(draw_face_boxes(image_rgb, [reg_landmarks.reshape(-1, 2)]), caption="Detected face", use_container_width=True)
         else:
             st.warning("No face detected.")
 
-    if st.button("Register", disabled=not(reg_landmarks is not None and name.strip() and sid.strip())):
+    if st.button("Register", disabled=not (isinstance(reg_landmarks, np.ndarray) and reg_landmarks.size == 936 and name.strip() and sid.strip())):
         match_idx = compare_landmarks(encs_known, reg_landmarks)
         if match_idx is not None:
             st.error(f"Duplicate! Already registered as {names_known[match_idx]}.")
@@ -132,6 +137,7 @@ with tab_reg:
     with st.expander("📄 View registered students"):
         st.dataframe(full_data, use_container_width=True)
 
+# Login tab
 with tab_log:
     st.subheader("Student Login / Check-in")
     img_file = st.camera_input("Take a photo for login")
@@ -143,12 +149,12 @@ with tab_log:
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         login_landmarks = extract_landmarks(image_rgb)
 
-        if login_landmarks is not None:
+        if isinstance(login_landmarks, np.ndarray) and login_landmarks.size == 936:
             st.image(draw_face_boxes(image_rgb, [login_landmarks.reshape(-1, 2)]), caption="Detected face", use_container_width=True)
         else:
             st.warning("No face detected.")
 
-    if st.button("Login", disabled=(login_landmarks is None)):
+    if st.button("Login", disabled=not (isinstance(login_landmarks, np.ndarray) and login_landmarks.size == 936)):
         if not encs_known:
             st.error("No students registered yet.")
             st.stop()
