@@ -1,5 +1,5 @@
 streamlit==1.35.0
 opencv-python
-mediapipe==0.9.1.0
-numpy
+mediapipe==0.10.14
 requests
+numpy
