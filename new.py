@@ -5,17 +5,17 @@ import datetime
 import cv2
 import mediapipe as mp
 
-# App layout
 st.set_page_config(page_title="Student Face System", page_icon="🎓", layout="wide")
 
-# Sidebar instructions
 with st.sidebar.expander("Notes / Click here 📚", expanded=False):
     st.markdown("## Installation Guide")
     st.markdown("""
     Install dependencies:
+
     ```bash
     pip install streamlit numpy opencv-python mediapipe requests
     ```
+
     No need for dlib or face_recognition anymore!
     """)
 
@@ -34,14 +34,12 @@ with st.sidebar.expander("Notes / Click here 📚", expanded=False):
     4. Use **Log out** button to end session.
 
     **Notes:**
-    - Only one face should be visible.
-    - Use good lighting.
+    - Only one face should be visible during registration and login.
+    - Use good lighting for better recognition.
     """)
 
-# Google Apps Script endpoint (replace with yours)
 GAS_ENDPOINT = "https://script.google.com/macros/s/AKfycbzAKYUXou_wnw5Yj35YsX7QeSd02u09e0QZynazxJ7Z_FsOUe_xpRSANoXLItPZyCnk/exec"
 
-# Initialize MediaPipe face mesh
 mp_face = mp.solutions.face_mesh
 
 @st.cache_data(show_spinner=False)
@@ -75,7 +73,6 @@ def extract_landmarks(image):
     with mp_face.FaceMesh(static_image_mode=True, max_num_faces=1, refine_landmarks=True) as face_mesh:
         results = face_mesh.process(image)
         if not results.multi_face_landmarks:
-            st.warning("⚠️ No face detected. Try again with better lighting and only one face.")
             return None
         h, w, _ = image.shape
         landmarks = results.multi_face_landmarks[0].landmark
@@ -89,14 +86,12 @@ def compare_landmarks(known_encs, test_enc, threshold=0.08):
             return idx
     return None
 
-# App UI
 st.title("🎓 Student Face System — Camera Input with MediaPipe")
 
 names_known, encs_known, full_data = fetch_registered()
 
 tab_reg, tab_log = st.tabs(["📝 Register", "✅ Login"])
 
-# ───────────── Register Tab ─────────────
 with tab_reg:
     st.subheader("Register New Student")
     name = st.text_input("Full Name")
@@ -112,7 +107,13 @@ with tab_reg:
         reg_landmarks = extract_landmarks(image_rgb)
 
         if reg_landmarks is not None:
-            st.image(draw_face_boxes(image_rgb, [reg_landmarks.reshape(-1, 2)]), caption="Detected face", use_container_width=True)
+            try:
+                reshaped = reg_landmarks.reshape(-1, 2)
+                st.image(draw_face_boxes(image_rgb, [reshaped]), caption="Detected face", use_container_width=True)
+            except Exception as e:
+                st.error(f"❌ Failed to process face landmarks: {e}")
+        else:
+            st.warning("⚠️ No face detected. Try again.")
 
     if st.button("Register", disabled=not(reg_landmarks is not None and name.strip() and sid.strip())):
         match_idx = compare_landmarks(encs_known, reg_landmarks)
@@ -134,7 +135,6 @@ with tab_reg:
     with st.expander("📄 View registered students"):
         st.dataframe(full_data, use_container_width=True)
 
-# ───────────── Login Tab ─────────────
 with tab_log:
     st.subheader("Student Login / Check-in")
     img_file = st.camera_input("Take a photo for login")
@@ -147,7 +147,13 @@ with tab_log:
         login_landmarks = extract_landmarks(image_rgb)
 
         if login_landmarks is not None:
-            st.image(draw_face_boxes(image_rgb, [login_landmarks.reshape(-1, 2)]), caption="Detected face", use_container_width=True)
+            try:
+                reshaped = login_landmarks.reshape(-1, 2)
+                st.image(draw_face_boxes(image_rgb, [reshaped]), caption="Detected face", use_container_width=True)
+            except Exception as e:
+                st.error(f"❌ Failed to process face landmarks: {e}")
+        else:
+            st.warning("⚠️ No face detected. Try again.")
 
     if st.button("Login", disabled=(login_landmarks is None)):
         if not encs_known:
@@ -159,7 +165,7 @@ with tab_log:
             st.success(f"✅ Welcome back, {names_known[match_idx]}! You are checked in.")
             st.session_state["logged_in"] = names_known[match_idx]
         else:
-            st.error("Face not recognised. Please register first.")
+            st.error("❌ Face not recognised. Please register first.")
 
     if "logged_in" in st.session_state:
         st.markdown(f"### Logged in as: {st.session_state['logged_in']}")
