@@ -5,6 +5,7 @@ import datetime
 import cv2
 import mediapipe as mp
 
+# --- Streamlit config ---
 st.set_page_config(page_title="Student Face System", page_icon="🎓", layout="wide")
 
 with st.sidebar.expander("Notes / Click here 📚", expanded=False):
@@ -38,8 +39,10 @@ with st.sidebar.expander("Notes / Click here 📚", expanded=False):
     - Use good lighting for better recognition.
     """)
 
-GAS_ENDPOINT = "https://script.google.com/macros/s/AKfycbzAKYUXou_wnw5Yj35YsX7QeSd02u09e0QZynazxJ7Z_FsOUe_xpRSANoXLItPZyCnk/exec"
+# --- Google Apps Script Webhook Endpoint ---
+GAS_ENDPOINT = "https://script.google.com/macros/s/AKfycbz85q3-5fifClgDUqGQ6hrN3cDa3AgywAwzUSf7Q7VMWz-GI56RWV0IchCpyE7Q-jJjuQ/exec"
 
+# --- MediaPipe config ---
 mp_face = mp.solutions.face_mesh
 
 @st.cache_data(show_spinner=False)
@@ -48,8 +51,18 @@ def fetch_registered():
         resp = requests.get(GAS_ENDPOINT, timeout=10)
         resp.raise_for_status()
         data = resp.json()
-        names = [d["name"] for d in data]
-        encs = [np.fromstring(d["encoding"], sep=",") for d in data]
+
+        # Filter out malformed encodings
+        names = []
+        encs = []
+        for d in data:
+            try:
+                encoding = np.fromstring(d["encoding"], sep=",")
+                if encoding.shape == (936,):
+                    names.append(d["name"])
+                    encs.append(encoding)
+            except Exception:
+                continue
         return names, encs, data
     except Exception as e:
         st.error(f"Failed to fetch registered users: {e}")
@@ -77,21 +90,24 @@ def extract_landmarks(image):
         h, w, _ = image.shape
         landmarks = results.multi_face_landmarks[0].landmark
         coords = [(lm.x * w, lm.y * h) for lm in landmarks]
-        return np.array(coords).flatten()
+        return np.array(coords).flatten()  # 936 values (468 x 2)
 
 def compare_landmarks(known_encs, test_enc, threshold=0.08):
     for idx, enc in enumerate(known_encs):
+        if enc.shape != test_enc.shape:
+            continue  # skip malformed encoding
         dist = np.linalg.norm(enc - test_enc)
         if dist < threshold:
             return idx
     return None
 
+# --- Main UI ---
 st.title("🎓 Student Face System — Camera Input with MediaPipe")
 
 names_known, encs_known, full_data = fetch_registered()
-
 tab_reg, tab_log = st.tabs(["📝 Register", "✅ Login"])
 
+# --- Register Tab ---
 with tab_reg:
     st.subheader("Register New Student")
     name = st.text_input("Full Name")
@@ -107,10 +123,10 @@ with tab_reg:
         reg_landmarks = extract_landmarks(image_rgb)
 
         if reg_landmarks is not None:
-            reshaped = reg_landmarks.reshape(-1, 2)
-            st.image(draw_face_boxes(image_rgb, [reshaped]), caption="Detected face")
+            preview_img = draw_face_boxes(image_rgb, [reg_landmarks.reshape(-1, 2)])
+            st.image(preview_img, caption="Detected face")
         else:
-            st.warning("No face detected.")
+            st.warning("No face detected. Please try again.")
 
     if st.button("Register", disabled=not(reg_landmarks is not None and name.strip() and sid.strip())):
         match_idx = compare_landmarks(encs_known, reg_landmarks)
@@ -130,8 +146,9 @@ with tab_reg:
         names_known, encs_known, full_data = fetch_registered()
 
     with st.expander("📄 View registered students"):
-        st.dataframe(full_data)
+        st.dataframe(full_data, use_container_width=True)
 
+# --- Login Tab ---
 with tab_log:
     st.subheader("Student Login / Check-in")
     img_file = st.camera_input("Take a photo for login")
@@ -144,10 +161,10 @@ with tab_log:
         login_landmarks = extract_landmarks(image_rgb)
 
         if login_landmarks is not None:
-            reshaped = login_landmarks.reshape(-1, 2)
-            st.image(draw_face_boxes(image_rgb, [reshaped]), caption="Detected face")
+            preview_img = draw_face_boxes(image_rgb, [login_landmarks.reshape(-1, 2)])
+            st.image(preview_img, caption="Detected face")
         else:
-            st.warning("No face detected.")
+            st.warning("No face detected. Try again.")
 
     if st.button("Login", disabled=(login_landmarks is None)):
         if not encs_known:
